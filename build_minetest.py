@@ -174,7 +174,7 @@ else:
 # minetest
 if not os.path.isdir(join(BUILD, "minetest")):
     logger.info("minetest - Cloning from stable repo")
-    ret = run(["git", "clone", "--single-branch", "--branch", "5.3.0", "-c", "advice.detachedHead=false", "https://github.com/minetest/minetest.git", join(BUILD, "minetest")])
+    ret = run(["git", "clone", "--single-branch", "--branch", "5.4.0", "-c", "advice.detachedHead=false", "https://github.com/minetest/minetest.git", join(BUILD, "minetest")])
     if ret.returncode != 0:
         raise Exception("Minetest - Couldn't clone from stable repo")
 
