@@ -1,6 +1,8 @@
 """
 Compile minetest for windows with luasocket.
 
+!!! THIS HAS TO RUN IN A VISUAL STUDIO DEVELOPER COMMAND PROMPT !!!
+
 Copyright (C) 2019 Robert Lieback <robertlieback@zetabyte.de>
 
 This program is free software; you can redistribute it and/or modify
@@ -24,9 +26,11 @@ import shutil
 import logging
 from subprocess import run
 from datetime import datetime
-from distutils.dir_util import copy_tree
 import urllib.request
 from zipfile import ZipFile
+from shutil import copytree as copy_tree
+
+MINETEST_VERSION = "stable-5"
 
 # create logger
 logger = logging.getLogger(__name__)
@@ -36,6 +40,39 @@ ch.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
+
+
+def check_vs_environment() -> bool:
+    """
+    Check if script is running in a Visual Studio Developer Command Prompt.
+
+    Returns:
+        bool: True if running in VS Developer Command Prompt, False otherwise
+
+    Raises:
+        SystemExit: If required VS environment variables are not found
+    """
+    required_vars = [
+        'VSINSTALLDIR',
+        'VCINSTALLDIR',
+        'DevEnvDir',
+        'INCLUDE',
+        'LIB',
+        'LIBPATH'
+    ]
+
+    missing_vars = [var for var in required_vars if var not in os.environ]
+
+    if missing_vars:
+        logger.critical("This script must be run from a Visual Studio Developer Command Prompt!")
+        logger.critical("Missing environment variables: %s", ", ".join(missing_vars))
+        logger.critical("Please run this script from a Visual Studio Developer Command Prompt.")
+        sys.exit(1)
+
+    logger.info("Visual Studio Developer Command Prompt environment detected")
+    return True
+    
+check_vs_environment()
 
 start_time = datetime.now()
 
@@ -82,7 +119,7 @@ if not path.isdir(join(BUILD_TOOLS, "vcpkg")):
     logger.info("vcpkg - Download vcpkg from github")
     ret = run(
         [
-            "git", "clone", "--single-branch", "--branch", "2020.11", "-c", "advice.detachedHead=false",
+            "git", "clone", "--single-branch", "--branch", "master", "-c", "advice.detachedHead=false",
             "https://github.com/microsoft/vcpkg.git", join(BUILD_TOOLS, "vcpkg")
         ],
     )
@@ -100,12 +137,27 @@ else:
     logger.info("vcpkg - found executable")
 
 # vcpkg - compile depencies
-if not path.isdir(join(BUILD_TOOLS, "vcpkg", "buildtrees", "sqlite3", ARCH+"-windows-rel")):
+if not path.isdir(join(BUILD_TOOLS, "vcpkg", "buildtrees", "sqlite3", ARCH + "-windows-rel")):
     logger.info("vcpkg - Compiling build depencies")
     ret = run(
         [VCPKG, "install",
-         "irrlicht", "zlib", "curl[winssl]", "openal-soft", "libvorbis", "libogg", "sqlite3", "freetype", "luajit",
-         "gettext", "--triplet", f"{ARCH}-windows", "--no-binarycaching"],  # gettext for translations
+         "zlib",
+         "zstd",
+         "curl[winssl]",
+         "openal-soft",
+         "libvorbis",
+         "libogg",
+         "libjpeg-turbo",
+         "sqlite3",
+         "freetype",
+         "luajit",
+         "gmp",
+         "jsoncpp",
+         "gettext[tools]",
+         "sdl2",
+         "opengl",
+         "opengl-registry",
+         "--triplet", f"{ARCH}-windows", "--no-binarycaching"],
         cwd=join(BUILD_TOOLS, "vcpkg")
     )
     if ret.returncode != 0:
@@ -113,20 +165,11 @@ if not path.isdir(join(BUILD_TOOLS, "vcpkg", "buildtrees", "sqlite3", ARCH+"-win
 else:
     logger.info("vcpkg - Found compiled depencies")
 
-# gettext - download missing gettext tools
-if not path.isdir(join(BUILD_TOOLS, "gettext_tools")):
-    logger.info("gettext - Download missing gettext tools")
-    urllib.request.urlretrieve("https://github.com/mlocati/gettext-iconv-windows/releases/download/v0.19.8.1-v1.15/gettext0.19.8.1-iconv1.15-shared-32.zip", join(BUILD_TOOLS, "gettext_tools.zip"))
-    with ZipFile(join(BUILD_TOOLS, "gettext_tools.zip"), "r") as zipfile:
-        zipfile.extractall(join(BUILD_TOOLS, "gettext_tools"))
-    os.unlink(join(BUILD_TOOLS, "gettext_tools.zip"))
-else:
-    logger.info("gettext - Found gettext tools")
-
-# luarocks
+# clone luarocks repo
 if not path.isdir(join(BUILD_TOOLS, "luarocks")):
     logger.info("luarocks - Clone luarocks from github")
-    ret = run(["git", "clone", "--single-branch", "--branch", "v3.4.0", "-c", "advice.detachedHead=false", "https://github.com/luarocks/luarocks.git", join(BUILD_TOOLS, "luarocks")])
+    ret = run(["git", "clone", "--single-branch", "--branch", "master", "-c", "advice.detachedHead=false",
+               "https://github.com/luarocks/luarocks.git", join(BUILD_TOOLS, "luarocks")])
     if ret.returncode != 0:
         raise Exception("luarocks - Couldn't clone luarocks from github")
 else:
@@ -138,9 +181,12 @@ if not path.isfile(LUAROCKS):
     ret = run(
         [
             join(BUILD_TOOLS, "luarocks", "install.bat"),
-            "/SELFCONTAINED", "/NOREG", "/NOADMIN", "/Q",
+            "/SELFCONTAINED", 
+            "/NOREG", 
+            "/NOADMIN", 
+            "/Q",
             "/P", join(BUILD_TOOLS, "luarocks_" + ARCH),  # the luarocks install target
-            "/LUA", join(BUILD_TOOLS, "vcpkg", "buildtrees", "luajit", ARCH + "-windows-rel"),
+            "/LUA", join(BUILD_TOOLS, "vcpkg", "buildtrees", "luajit", ARCH + "-windows-rel", "src"),
             "/INC", join(BUILD_TOOLS, "vcpkg", "buildtrees", "luajit", "src",
                          os.listdir(join(BUILD_TOOLS, "vcpkg", "buildtrees", "luajit", "src"))[0], "src")
         ],
@@ -148,13 +194,6 @@ if not path.isfile(LUAROCKS):
     )
     if ret.returncode != 0:
         raise Exception("luarocks - Couldn't install luarocks")
-
-    # fix path to vcvars to specify architecture
-    with open(LUAROCKS, "rb+") as f:
-        file_source = str(f.read(), encoding="ascii").replace('vcvarsall', 'vcvars32')
-        f.seek(0)
-        write_file = f.write(file_source.encode("ascii"))
-        f.truncate()
 else:
     logger.info("luarocks - found installed luarocks")
 
@@ -162,6 +201,30 @@ else:
 if not path.isfile(join(BUILD_TOOLS, "luarocks_" + ARCH, "systree", "lib", "lua", "5.1", "cjson.dll")) or \
         not path.isfile(join(BUILD_TOOLS, "luarocks_" + ARCH, "systree", "lib", "lua", "5.1", "socket", "core.dll")):
     logger.info("luarocks - Installing luasocket and lua-cjson")
+
+    # Configure LuaRocks to use the correct LuaJIT
+    logger.info("luarocks - Configuring LuaJIT paths")
+    ret = run([
+        LUAROCKS, "config",
+        "variables.LUA_LIBDIR",
+        join(BUILD_TOOLS, "vcpkg", "installed", f"{ARCH}-windows", "lib")
+    ])
+    if ret.returncode != 0:
+        raise Exception("luarocks - Couldn't configure LUA_LIBDIR")
+
+    ret = run([
+        LUAROCKS, "config",
+        "variables.LUA_INCDIR",
+        join(BUILD_TOOLS, "vcpkg", "installed", f"{ARCH}-windows", "include", "luajit")
+    ])
+    if ret.returncode != 0:
+        raise Exception("luarocks - Couldn't configure LUA_INCDIR")
+
+    # Configure Visual Studio as compiler
+    ret = run([LUAROCKS, "config", "variables.MSVC", "1"])
+    if ret.returncode != 0:
+        raise Exception("luarocks - Couldn't configure MSVC")
+
     ret = run([LUAROCKS, "install", "luasocket"])
     if ret.returncode != 0:
         raise Exception("luarocks - Couldn't install luasocket")
@@ -174,13 +237,14 @@ else:
 # minetest
 if not os.path.isdir(join(BUILD, "minetest")):
     logger.info("minetest - Cloning from stable repo")
-    ret = run(["git", "clone", "--single-branch", "--branch", "5.4.0", "-c", "advice.detachedHead=false", "https://github.com/minetest/minetest.git", join(BUILD, "minetest")])
+    ret = run(["git", "clone", "--single-branch", "--branch", MINETEST_VERSION, "-c", "advice.detachedHead=false",
+               "https://github.com/minetest/minetest.git", join(BUILD, "minetest")])
     if ret.returncode != 0:
         raise Exception("Minetest - Couldn't clone from stable repo")
 
 # minetest - compile
-if not path.isfile(join(BUILD, "minetest", "bin", "Release_" + ARCH, "minetest.exe")):
-    logger.info("Minetest - Compiling Minetest")
+if not path.isfile(join(BUILD, "minetest", "bin", "Release_" + ARCH, "luanti.exe")):
+    logger.info("Minetest - Compiling Luanti")
     if ARCH == "x64":
         carch = "x64"
     else:
@@ -190,7 +254,7 @@ if not path.isfile(join(BUILD, "minetest", "bin", "Release_" + ARCH, "minetest.e
     cmake_dir1 = [i for i in os.listdir(join(BUILD_TOOLS, "vcpkg", "downloads", "tools")) if "cmake" in i][0]
     cmake_dir2 = os.listdir(join(BUILD_TOOLS, "vcpkg", "downloads", "tools", cmake_dir1))[0]
     cmake_path = join(BUILD_TOOLS, "vcpkg", "downloads", "tools", cmake_dir1, cmake_dir2, "bin", "cmake.exe")
-    
+
     # delete cmake caches
     if path.isdir(join(BUILD, "minetest", "CMakeFiles")):
         os.system(f'rmdir /s /q "{join(BUILD, "minetest", "CMakeFiles")}"')
@@ -205,7 +269,7 @@ if not path.isfile(join(BUILD, "minetest", "bin", "Release_" + ARCH, "minetest.e
             f"-DCMAKE_TOOLCHAIN_FILE={BUILD_TOOLS}/vcpkg/scripts/buildsystems/vcpkg.cmake",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DENABLE_GETTEXT=1",
-            f"-DGETTEXT_MSGFMT={BUILD_TOOLS}/gettext_tools/bin/msgfmt.exe",
+            #f"-DGETTEXT_MSGFMT={BUILD_TOOLS}/gettext_tools/bin/msgfmt.exe",  # not need cause of [tools]????
             # f"-DGETTEXT_DLL={BUILD_TOOLS}/vcpkg/buildtrees/gettext/{ARCH}-windows-rel/libintl.dll",
             f"-DGETTEXT_ICONV_DLL={BUILD_TOOLS}/vcpkg/buildtrees/libiconv/{ARCH}-windows-rel/libiconv.dll",
             "-DENABLE_CURSES=0",
@@ -231,7 +295,8 @@ else:
 if not path.isdir(join(BUILD, "minetest_game")):
     logger.info("minetest game - cloning repo")
     ret = run(
-        ["git", "clone", "--single-branch", "--branch", "stable-5", "-c", "advice.detachedHead=false", "https://github.com/minetest/minetest_game.git"]
+        ["git", "clone", "--single-branch", "--branch", "stable-5", "-c", "advice.detachedHead=false",
+         "https://github.com/minetest/minetest_game.git"]
     )
     if ret.returncode != 0:
         raise Exception("Minetest - Couldn't clone minetest")
@@ -244,24 +309,24 @@ if not path.isdir(join(ROOT_PATH, "dist")):
 if not path.isdir(DIST):
     logger.info("Building distribution")
     os.mkdir(DIST)
-    copy_tree(os.path.join(BUILD, "minetest", "bin", "Release_" + ARCH), join(DIST, "bin"))
-    copy_tree(os.path.join(BUILD, "minetest", "builtin"), join(DIST, "builtin"))
-    copy_tree(os.path.join(BUILD, "minetest", "client"), join(DIST, "client"))
-    copy_tree(os.path.join(BUILD, "minetest", "clientmods"), join(DIST, "clientmods"))
-    copy_tree(os.path.join(BUILD, "minetest", "doc"), join(DIST, "doc"))
-    copy_tree(os.path.join(BUILD, "minetest", "fonts"), join(DIST, "fonts"))
-    copy_tree(os.path.join(BUILD, "minetest", "games"), join(DIST, "games"))
-    copy_tree(os.path.join(BUILD, "minetest", "mods"), join(DIST, "mods"))
-    copy_tree(os.path.join(BUILD, "minetest", "locale"), join(DIST, "locale"))
-    copy_tree(os.path.join(BUILD, "minetest", "textures"), join(DIST, "textures"))
+    copy_tree(os.path.join(BUILD, "minetest", "bin", "Release_" + ARCH), join(DIST, "bin"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "builtin"), join(DIST, "builtin"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "client"), join(DIST, "client"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "clientmods"), join(DIST, "clientmods"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "doc"), join(DIST, "doc"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "fonts"), join(DIST, "fonts"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "games"), join(DIST, "games"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "mods"), join(DIST, "mods"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "locale"), join(DIST, "locale"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD, "minetest", "textures"), join(DIST, "textures"), dirs_exist_ok=True)
     shutil.copyfile(os.path.join(BUILD, "minetest", "LICENSE.txt"), join(DIST, "LICENSE.txt"))
-    os.unlink(join(DIST, "bin", "minetest.pdb"))
+    os.unlink(join(DIST, "bin", "luanti.pdb"))
 
-    copy_tree(os.path.join(BUILD, "minetest_game"), join(DIST, "games", "minetest_game"))
+    copy_tree(os.path.join(BUILD, "minetest_game"), join(DIST, "games", "minetest_game"), dirs_exist_ok=True)
     os.system('rmdir /s /q "%s"' % join(DIST, "games", "minetest_game", ".git"))
     os.mkdir(join(DIST, "worlds"))
 
-    copy_tree(os.path.join(BUILD_TOOLS, "luarocks_" + ARCH, "systree", "lib", "lua", "5.1"), join(DIST, "bin"))
-    copy_tree(os.path.join(BUILD_TOOLS, "luarocks_" + ARCH, "systree", "share", "lua", "5.1"), join(DIST, "bin", "lua"))
+    copy_tree(os.path.join(BUILD_TOOLS, "luarocks_" + ARCH, "systree", "lib", "lua", "5.1"), join(DIST, "bin"), dirs_exist_ok=True)
+    copy_tree(os.path.join(BUILD_TOOLS, "luarocks_" + ARCH, "systree", "share", "lua", "5.1"), join(DIST, "bin", "lua"), dirs_exist_ok=True)
 
 logger.info("That run took " + str(datetime.now() - start_time))
